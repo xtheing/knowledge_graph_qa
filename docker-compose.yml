@@ -42,6 +42,18 @@ services:
     restart: unless-stopped
     command: python -m src.api.main
 
+  # 前端服务
+  frontend:
+    build: ./frontend
+    container_name: kg-frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - kg-api
+    networks:
+      - kg-network
+    restart: unless-stopped
+
 volumes:
   neo4j_data:
   neo4j_logs:
