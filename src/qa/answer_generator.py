@@ -3,9 +3,8 @@
 """
 
 from typing import Dict, List, Any, Optional
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import StrOutputParser
+
+from ..utils.minimax_client import get_minimax_client
 
 
 class AnswerGenerator:
@@ -21,19 +20,18 @@ class AnswerGenerator:
         初始化答案生成器
 
         Args:
-            model_name: LLM模型名称
+            model_name: LLM模型名称（保留参数但使用MiniMax）
             temperature: 温度参数
             max_tokens: 最大生成token数
         """
-        self.llm = ChatOpenAI(
-            model=model_name, temperature=temperature, max_tokens=max_tokens
-        )
-        self.prompt = self._build_prompt()
-        self.chain = self.prompt | self.llm | StrOutputParser()
+        self.minimax_client = get_minimax_client()
+        self.temperature = temperature
+        self.max_tokens = max_tokens
+        self.prompt_template = self._build_prompt()
 
-    def _build_prompt(self) -> ChatPromptTemplate:
+    def _build_prompt(self) -> str:
         """构建问答提示模板"""
-        template = """你是一个专业的学术问答助手。请基于提供的知识图谱上下文回答用户问题。
+        return """你是一个专业的学术问答助手。请基于提供的知识图谱上下文回答用户问题。
 
 重要说明：
 1. 只使用提供的上下文信息，不要引入外部知识
@@ -56,8 +54,6 @@ class AnswerGenerator:
 
 回答:"""
 
-        return ChatPromptTemplate.from_template(template)
-
     def generate(
         self, context: str, question: str, include_citations: bool = True
     ) -> Dict[str, Any]:
@@ -74,7 +70,10 @@ class AnswerGenerator:
         """
         try:
             # 生成答案
-            answer = self.chain.invoke({"context": context, "question": question})
+            prompt = self.prompt_template.format(context=context, question=question)
+            answer = self.minimax_client.generate(
+                prompt, self.temperature, self.max_tokens
+            )
 
             # 提取使用的实体（简单启发式）
             used_entities = self._extract_entities_from_context(context)
@@ -112,15 +111,17 @@ class AnswerGenerator:
             包含答案和引用的字典
         """
         # 构建带引用的提示
-        citation_prompt = self._build_citation_prompt()
-        citation_chain = citation_prompt | self.llm | StrOutputParser()
+        citation_prompt_template = self._build_citation_prompt()
 
         # 格式化引用
         citation_text = self._format_citations(citations)
 
         try:
-            answer = citation_chain.invoke(
-                {"context": context, "question": question, "citations": citation_text}
+            prompt = citation_prompt_template.format(
+                context=context, question=question, citations=citation_text
+            )
+            answer = self.minimax_client.generate(
+                prompt, self.temperature, self.max_tokens
             )
 
             return {
@@ -138,9 +139,9 @@ class AnswerGenerator:
                 "success": False,
             }
 
-    def _build_citation_prompt(self) -> ChatPromptTemplate:
+    def _build_citation_prompt(self) -> str:
         """构建带引用的提示模板"""
-        template = """你是一个专业的学术问答助手。请基于知识图谱上下文回答问题，并在答案中标注引用。
+        return """你是一个专业的学术问答助手。请基于知识图谱上下文回答问题，并在答案中标注引用。
 
 引用格式：使用 [1], [2] 等标记，对应提供的引用列表。
 
@@ -160,8 +161,6 @@ class AnswerGenerator:
 4. 回答使用中文
 
 回答:"""
-
-        return ChatPromptTemplate.from_template(template)
 
     def _format_citations(self, citations: Dict[str, Any]) -> str:
         """格式化引用信息"""
@@ -205,12 +204,13 @@ class QuestionClassifier:
     }
 
     def __init__(self, model_name: str = "gpt-3.5-turbo"):
-        self.llm = ChatOpenAI(model=model_name, temperature=0.1)
-        self.prompt = self._build_prompt()
-        self.chain = self.prompt | self.llm | StrOutputParser()
+        self.minimax_client = get_minimax_client()
+        self.temperature = 0.1
+        self.max_tokens = 100
+        self.prompt_template = self._build_prompt()
 
-    def _build_prompt(self) -> ChatPromptTemplate:
-        template = """请分析以下学术问题的类型，返回最匹配的类型标签。
+    def _build_prompt(self) -> str:
+        return """请分析以下学术问题的类型，返回最匹配的类型标签。
 
 问题类型：
 - FACTUAL: 事实性问题，询问具体信息（如：什么是BERT？使用了什么数据集？）
@@ -223,12 +223,13 @@ class QuestionClassifier:
 
 请只输出类型标签（如：FACTUAL），不要其他解释。"""
 
-        return ChatPromptTemplate.from_template(template)
-
     def classify(self, question: str) -> str:
         """分类问题类型"""
         try:
-            result = self.chain.invoke({"question": question})
+            prompt = self.prompt_template.format(question=question)
+            result = self.minimax_client.generate(
+                prompt, self.temperature, self.max_tokens
+            )
             question_type = result.strip().upper()
 
             if question_type in self.QUESTION_TYPES:

@@ -4,16 +4,13 @@
 
 import json
 import re
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Tuple
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
 
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import StrOutputParser
-
 from ..ingestion.pdf_parser import DocumentChunk
+from ..utils.minimax_client import get_minimax_client
 
 
 @dataclass
@@ -91,22 +88,20 @@ class EntityExtractor:
 
     def __init__(
         self,
-        model_name: str = "gpt-4",
         temperature: float = 0.1,
         max_tokens: int = 2000,
     ):
-        self.llm = ChatOpenAI(
-            model=model_name, temperature=temperature, max_tokens=max_tokens
-        )
-        self.prompt = self._build_prompt()
-        self.chain = self.prompt | self.llm | StrOutputParser()
+        self.minimax_client = get_minimax_client()
+        self.temperature = temperature
+        self.max_tokens = max_tokens
+        self.prompt_template = self._build_prompt_template()
 
-    def _build_prompt(self) -> ChatPromptTemplate:
+    def _build_prompt_template(self) -> str:
         """构建抽取提示模板"""
         entity_types_str = ", ".join(self.ENTITY_TYPES)
         relation_types_str = ", ".join(self.RELATION_TYPES)
 
-        template = f"""你是一个专业的学术论文知识抽取助手。请从以下论文段落中抽取结构化知识。
+        return f"""你是一个专业的学术论文知识抽取助手。请从以下论文段落中抽取结构化知识。
 
 实体类型包括：{entity_types_str}
 
@@ -143,8 +138,6 @@ class EntityExtractor:
 
 只输出JSON，不要添加markdown代码块标记或其他说明文字。"""
 
-        return ChatPromptTemplate.from_template(template)
-
     def extract(self, chunk: DocumentChunk) -> Dict[str, List]:
         """
         从单个文本片段抽取知识
@@ -154,7 +147,10 @@ class EntityExtractor:
         """
         try:
             # 调用LLM抽取
-            result_text = self.chain.invoke({"text": chunk.text})
+            prompt = self.prompt_template.format(text=chunk.text)
+            result_text = self.minimax_client.generate(
+                prompt, self.temperature, self.max_tokens
+            )
 
             # 解析JSON结果
             knowledge = self._parse_json(result_text)
@@ -386,11 +382,10 @@ class KnowledgeExtractor:
 
     def __init__(
         self,
-        model_name: str = "gpt-4",
         enable_alignment: bool = True,
         alignment_threshold: float = 0.85,
     ):
-        self.entity_extractor = EntityExtractor(model_name)
+        self.entity_extractor = EntityExtractor()
         self.entity_aligner = (
             EntityAligner(alignment_threshold) if enable_alignment else None
         )
@@ -503,7 +498,7 @@ if __name__ == "__main__":
         print(f"片段数: {len(chunks)}")
 
         # 抽取知识（只处理前5个片段作为测试）
-        extractor = KnowledgeExtractor(model_name="gpt-4")
+        extractor = KnowledgeExtractor()
         result = extractor.extract_from_paper(chunks[:5], metadata)
 
         print(f"\n抽取结果:")
